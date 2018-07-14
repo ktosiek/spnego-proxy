@@ -1,0 +1,13 @@
+[package]
+name = "spnego-proxy"
+version = "0.1.0"
+authors = ["Tomasz Kontusz <tomasz.kontusz@gmail.com>"]
+
+[dependencies]
+tokio = "0.1"
+futures = "0.1"
+nom = "4.0"
+
+[[bin]]
+name = "spnego-proxy"
+path = "src/main.rs"
