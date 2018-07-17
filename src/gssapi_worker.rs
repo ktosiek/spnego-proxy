@@ -5,36 +5,35 @@ use std::str;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 
-pub struct GSSCtxId {
-    id: u32,
-}
-
 pub enum Cmd {
-    NewContext(),
-    Accept(GSSCtxId, Vec<u8>),
-    DropContext(GSSCtxId),
+    Accept(Vec<u8>),
 }
 
 pub enum Msg {
-    NewContext(GSSCtxId),
-    ContinueNeeded(GSSCtxId, Vec<u8>),
-    Accepted(GSSCtxId, String),
-    Failed(GSSCtxId, GSSError),
-    DroppedContext(GSSCtxId),
+    ContinueNeeded(Vec<u8>),
+    Accepted(String),
+    Failed(GSSError),
+}
+
+#[derive(Debug)]
+pub enum AcceptResult {
+    ContinueNeeded(Vec<u8>),
+    Accepted(String),
+    Failed(GSSError),
 }
 
 impl Msg {
-    fn from(id: GSSCtxId, r: Result<gssapi::AcceptResult, gssapi::GSSError>) -> Msg {
+    fn from(r: Result<gssapi::AcceptResult, gssapi::GSSError>) -> Msg {
         match r {
             Ok(gssapi::AcceptResult::Complete(name)) => {
                 let str_name =
                     String::from(str::from_utf8(name.display_name().unwrap().as_bytes()).unwrap());
-                Msg::Accepted(id, str_name.clone())
+                Msg::Accepted(str_name.clone())
             }
             Ok(gssapi::AcceptResult::ContinueNeeded(buf)) => {
-                Msg::ContinueNeeded(id, Vec::from(buf.as_bytes()))
+                Msg::ContinueNeeded(Vec::from(buf.as_bytes()))
             }
-            Err(e) => Msg::Failed(id, e),
+            Err(e) => Msg::Failed(e),
         }
     }
 }
@@ -55,30 +54,30 @@ impl GSSWorker {
             worker: ::std::thread::spawn(move || worker_thread(cmd_rx, msg_tx)),
         }
     }
+
+    pub fn accept_sec_context(&self, input_token: Vec<u8>) -> AcceptResult {
+        self.cmd_channel.send(Cmd::Accept(input_token)).unwrap();
+        match self.msg_channel.recv().unwrap() {
+            Msg::Accepted(s) => AcceptResult::Accepted(s),
+            Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
+            Msg::Failed(e) => AcceptResult::Failed(e),
+        }
+    }
 }
 
 fn worker_thread(inbox: Receiver<Cmd>, outbox: Sender<Msg>) {
-    let mut contexts = HashMap::new();
-    let mut next_id = 0;
+    let mut context = gssapi::GSSContext::new();
 
     loop {
-        let msg = inbox.recv().unwrap();
+        let msg = inbox.recv();
         let response = match msg {
-            Cmd::NewContext() => {
-                next_id += 1;
-                contexts.insert(next_id, gssapi::GSSContext::new());
-                Msg::NewContext(GSSCtxId { id: next_id })
-            }
-            Cmd::Accept(id, bytes) => {
-                let mut ctx = contexts.get_mut(&id.id).unwrap();
-                Msg::from(
-                    id,
-                    gssapi::accept_sec_context(&mut ctx, &gssapi::AppBuffer::from(&bytes)),
-                )
-            }
-            Cmd::DropContext(id) => {
-                contexts.remove(&id.id).unwrap();
-                Msg::DroppedContext(id)
+            Ok(Cmd::Accept(bytes)) => Msg::from(gssapi::accept_sec_context(
+                &mut context,
+                &gssapi::AppBuffer::from(&bytes),
+            )),
+            Err(_) => {
+                println!("Stopping thread");
+                return;
             }
         };
         outbox.send(response).unwrap();

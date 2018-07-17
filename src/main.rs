@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 mod gssapi;
 mod gssapi_worker;
 use futures::prelude::*;
-use gssapi_worker::{GSSCtxId, GSSWorker};
+use gssapi_worker::GSSWorker;
 
 use hyper::service::Service;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
@@ -22,13 +22,13 @@ use rand::Rng;
 
 struct ClientSession {
     id: u64,
-    gss_worker: Arc<Mutex<GSSWorker>>,
+    gss_worker: GSSWorker,
 }
 
-fn new_session<'a>(gss_worker: Arc<Mutex<GSSWorker>>) -> ClientSession {
+fn new_session<'a>() -> ClientSession {
     ClientSession {
         id: rand::thread_rng().gen_range(0, 1 << 64 - 1),
-        gss_worker,
+        gss_worker: GSSWorker::new(),
     }
 }
 
@@ -56,10 +56,22 @@ fn handle_request(
         .headers()
         .get("Authorization")
         .and_then(|h| parse_authorization_header(h.to_str().unwrap()));
+    println!("Authorization: {:?}", authenticate);
+    if authenticate.is_none() {
+        let mut res = Response::builder();
+        res.header("WWW-Authenticate", "Negotiate")
+            .status(StatusCode::UNAUTHORIZED);
+        let response = res
+            .body(Body::from("No Authorization"))
+            .map_err(|e| format!("{:?}", e));
+        return Box::new(futures::done(response));
+    }
+    let result = authenticate
+        .clone()
+        .map(|a| session.gss_worker.accept_sec_context(a));
     Box::new(futures::done(Ok(Response::new(Body::from(format!(
-        "Session {}<br/>Authenticate: {:?}",
-        session.id,
-        authenticate.unwrap_or(vec![])
+        "Session {}\nAuthenticate: {:?}\nResult: {:?}",
+        session.id, authenticate, result
     ))))))
 }
 
@@ -72,9 +84,8 @@ fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {
 
 fn main() {
     let addr = ([10, 0, 0, 2], 3000).into();
-    let gss_worker = Arc::new(Mutex::new(GSSWorker::new()));
 
-    let new_service = move || Ok::<_, String>(new_session(gss_worker.clone()));
+    let new_service = || Ok::<_, String>(new_session());
     let server = Server::bind(&addr).serve(new_service);
 
     println!("Listening on http://{}", addr);

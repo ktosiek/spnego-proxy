@@ -8,6 +8,10 @@ const GSS_C_NO_CONTEXT: gssapi_sys::gss_ctx_id_t = ptr::null_mut();
 const GSS_C_NO_CREDENTIAL: gssapi_sys::gss_cred_id_t = ptr::null_mut();
 const GSS_C_NO_CHANNEL_BINDINGS: gssapi_sys::gss_channel_bindings_t = ptr::null_mut();
 const GSS_C_NO_OID: gssapi_sys::gss_OID = ptr::null_mut();
+// gss_display_status types {
+const GSS_C_GSS_CODE: ::std::os::raw::c_int = 1;
+const GSS_C_MECH_CODE: ::std::os::raw::c_int = 2;
+// }
 
 pub struct GSSContext {
     gss_ctx_id: gssapi_sys::gss_ctx_id_t,
@@ -151,9 +155,23 @@ impl GSSName {
     }
 }
 
+#[derive(Debug)]
 pub struct GSSError {
     major: u32,
     minor: u32,
+    errors: Vec<String>,
+}
+
+impl GSSError {
+    fn new(major: u32, minor: u32, mech_type: gssapi_sys::gss_OID) -> GSSError {
+        let mut errors = display_major_status(major);
+        errors.append(&mut display_minor_status(minor, mech_type));
+        GSSError {
+            major,
+            minor,
+            errors,
+        }
+    }
 }
 
 pub enum AcceptResult {
@@ -169,6 +187,7 @@ pub fn accept_sec_context(
     let mut minor: u32 = 0;
     let mut output_token = GSSBuffer::new();
     let mut client_name: *mut gssapi_sys::gss_name_struct = ptr::null_mut();
+    let mut mech_type: gssapi_sys::gss_OID = ptr::null_mut();
     unsafe {
         major = gssapi_sys::gss_accept_sec_context(
             &mut minor,
@@ -177,7 +196,7 @@ pub fn accept_sec_context(
             received_token.as_gss_buffer() as *mut gssapi_sys::gss_buffer_desc_struct,
             GSS_C_NO_CHANNEL_BINDINGS,
             &mut client_name,
-            ptr::null_mut(), // mech_type
+            &mut mech_type,
             output_token.as_gss_buffer_mut(),
             ptr::null_mut(), // ret_flags
             ptr::null_mut(), // time_rec
@@ -187,6 +206,44 @@ pub fn accept_sec_context(
     match major {
         gssapi_sys::GSS_S_CONTINUE_NEEDED => Ok(AcceptResult::ContinueNeeded(output_token)),
         gssapi_sys::GSS_S_COMPLETE => Ok(AcceptResult::Complete(GSSName::from_raw(client_name))),
-        _ => Err(GSSError { major, minor }),
+        _ => Err(GSSError::new(major, minor, mech_type)),
     }
+}
+
+fn display_major_status(status_code: u32) -> Vec<String> {
+    gss_display_status(status_code, GSS_C_GSS_CODE, GSS_C_NO_OID)
+}
+
+fn display_minor_status(status_code: u32, mech_type: gssapi_sys::gss_OID) -> Vec<String> {
+    gss_display_status(status_code, GSS_C_MECH_CODE, mech_type)
+}
+
+fn gss_display_status(
+    status_code: u32,
+    status_type: ::std::os::raw::c_int,
+    mach_type: gssapi_sys::gss_OID,
+) -> Vec<String> {
+    let mut major: u32 = 0;
+    let mut minor: u32 = 0;
+    let mut message_context: u32 = 0;
+    let mut result = vec![];
+    loop {
+        let mut buf = GSSBuffer::new();
+        unsafe {
+            major = gssapi_sys::gss_display_status(
+                &mut minor,
+                status_code,
+                status_type,
+                GSS_C_NO_OID,
+                &mut message_context,
+                buf.as_gss_buffer_mut(),
+            )
+        }
+        result.push(String::from(str::from_utf8(buf.as_bytes()).unwrap()));
+        if message_context == 0 {
+            break;
+        }
+    }
+
+    result
 }
