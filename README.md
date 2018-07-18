@@ -6,9 +6,10 @@ WIP: A small reverse HTTP proxy for authenticating clients with SPNEGO.
 TODO:
 [ ] Mutual auth
 [ ] Less .unwrap()
+[x] Always check major/minor GSS codes
 [ ] Logging
 [ ] Move to raw tokio (hyper hides the peer info), or even raw sockets/splice (any good select() lib?)
-[ ] Workers bound to threads? GSS-API is not Send/Sync
+[ ] Web workers bound to threads? GSS-API is not Send/Sync
 [ ] Authorization
 [ ] Actual proxying
 [ ] Configuration file
