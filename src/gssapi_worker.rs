@@ -55,6 +55,7 @@ impl GSSWorker {
         }
     }
 
+    // TODO: a future
     pub fn accept_sec_context(&self, input_token: Vec<u8>) -> AcceptResult {
         self.cmd_channel.send(Cmd::Accept(input_token)).unwrap();
         match self.msg_channel.recv().unwrap() {
