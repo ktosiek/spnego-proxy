@@ -108,8 +108,13 @@ impl GSSBuffer {
         &mut self.desc
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.desc.length == 0
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
-        if self.desc.value.is_null() {
+        if self.is_empty() {
+            assert!(self.desc.value.is_null());
             &[]
         } else {
             unsafe { slice::from_raw_parts(self.desc.value as *const u8, self.desc.length) }
@@ -210,7 +215,7 @@ impl error::Error for GSSError {
 
 pub enum AcceptResult {
     ContinueNeeded(GSSBuffer),
-    Complete(GSSName),
+    Complete(GSSBuffer, GSSName),
 }
 
 pub fn accept_sec_context(
@@ -238,7 +243,10 @@ pub fn accept_sec_context(
     };
     match major {
         gssapi_sys::GSS_S_CONTINUE_NEEDED => Ok(AcceptResult::ContinueNeeded(output_token)),
-        gssapi_sys::GSS_S_COMPLETE => Ok(AcceptResult::Complete(GSSName::from_raw(client_name))),
+        gssapi_sys::GSS_S_COMPLETE => Ok(AcceptResult::Complete(
+            output_token,
+            GSSName::from_raw(client_name),
+        )),
         _ => Err(GSSError::new(major, minor, mech_type)),
     }
 }

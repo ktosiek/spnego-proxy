@@ -70,29 +70,28 @@ fn handle_request(
     let (state, response) = match (&authenticate, &session.state) {
         (Some(token), AuthState::InProgress(gss_worker)) => {
             match continue_authentication(gss_worker, token) {
-                Either::Left(user) => {
-                    let response = proxy_request(req, session, &user);
+                Either::Left((output, user)) => {
+                    let response = proxy_request(req, session, &user, &output);
                     (Some(AuthState::Ok(user)), response)
                 }
                 Either::Right(response) => (None, response),
             }
         }
-        (Some(token), AuthState::Ok(user)) => {
+        (Some(token), AuthState::Ok(_)) => {
             println!("Got Authorization header on an authorized connection");
             let gss_worker = GSSWorker::new();
             match continue_authentication(&gss_worker, token) {
-                Either::Left(user) => {
-                    // TODO: GSS might have a final token for the user, for mutual auth
-                    let response = proxy_request(req, session, &user);
+                Either::Left((output, user)) => {
+                    let response = proxy_request(req, session, &user, &output);
                     (Some(AuthState::Ok(user)), response)
                 }
                 Either::Right(response) => (Some(AuthState::InProgress(gss_worker)), response),
             }
         }
-        (None, AuthState::Ok(user)) => (None, proxy_request(req, session, &user)),
+        (None, AuthState::Ok(user)) => (None, proxy_request(req, session, &user, &vec![])),
         (None, AuthState::InProgress(_)) => (
             None,
-            Box::new(futures::done(request_new_negotiation()))
+            Box::new(futures::done(authorization_request(&vec![])))
                 as Box<Future<Item = Response<Body>, Error = String> + Send>,
         ),
     };
@@ -105,33 +104,27 @@ fn handle_request(
     response
 }
 
-fn request_new_negotiation() -> Result<Response<Body>, String> {
-    let mut res = Response::builder();
-    res.header("WWW-Authenticate", "Negotiate")
-        .status(StatusCode::UNAUTHORIZED);
-    let response = res
+fn authorization_request(token: &Vec<u8>) -> Result<Response<Body>, String> {
+    let authenticate = if token.is_empty() {
+        String::from("Negotiate")
+    } else {
+        format!("Negotiate {}", base64::encode(token))
+    };
+    Response::builder()
+        .header("WWW-Authenticate", authenticate.as_bytes())
+        .status(StatusCode::UNAUTHORIZED)
         .body(Body::from("No Authorization"))
-        .map_err(|e| format!("{:?}", e));
-    response
+        .map_err(|e| format!("{:?}", e))
 }
 
 fn continue_authentication(
     gss_worker: &GSSWorker,
     token: &Vec<u8>,
-) -> Either<String, Box<Future<Item = Response<Body>, Error = String> + Send>> {
+) -> Either<(Vec<u8>, String), Box<Future<Item = Response<Body>, Error = String> + Send>> {
     match gss_worker.accept_sec_context(token.clone()) {
-        gssapi_worker::AcceptResult::Accepted(user) => Either::Left(user),
+        gssapi_worker::AcceptResult::Accepted(output, user) => Either::Left((output, user)),
         gssapi_worker::AcceptResult::ContinueNeeded(output) => {
-            Either::Right(Box::new(futures::done(
-                Response::builder()
-                    .header(
-                        "WWW-Authenticate",
-                        format!("Negotiate {}", base64::encode(&output)).as_bytes(),
-                    )
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body(Body::from("No Authorization"))
-                    .map_err(|e| format!("{:?}", e)),
-            )))
+            Either::Right(Box::new(futures::done(authorization_request(&output))))
         }
         gssapi_worker::AcceptResult::Failed(err) => Either::Right(Box::new(futures::done(
             Response::builder()
@@ -147,12 +140,24 @@ fn proxy_request(
     req: Request<Body>,
     session: &ClientSession,
     user: &String,
+    authenticate: &Vec<u8>,
 ) -> Box<Future<Item = Response<Body>, Error = String> + Send> {
     // TODO: Proxy
-    Box::new(futures::done(Ok(Response::new(Body::from(format!(
-        "Session {}\nUser: {}\n",
-        session.id, user
-    ))))))
+    let mut response = Response::builder();
+    if !authenticate.is_empty() {
+        response.header(
+            "WWW-Authenticate",
+            format!("Negotiate {}", base64::encode(authenticate)).as_bytes(),
+        );
+    }
+    Box::new(futures::done(
+        response
+            .body(Body::from(format!(
+                "Session {}\nUser: {}\n",
+                session.id, user
+            )))
+            .map_err(|e| format!("{:?}", e)),
+    ))
 }
 
 fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {

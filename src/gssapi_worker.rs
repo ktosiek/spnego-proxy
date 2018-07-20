@@ -11,24 +11,24 @@ pub enum Cmd {
 
 pub enum Msg {
     ContinueNeeded(Vec<u8>),
-    Accepted(String),
+    Accepted(Vec<u8>, String),
     Failed(GSSError),
 }
 
 #[derive(Debug)]
 pub enum AcceptResult {
     ContinueNeeded(Vec<u8>),
-    Accepted(String),
+    Accepted(Vec<u8>, String),
     Failed(GSSError),
 }
 
 impl Msg {
     fn from(r: Result<gssapi::AcceptResult, gssapi::GSSError>) -> Msg {
         match r {
-            Ok(gssapi::AcceptResult::Complete(name)) => {
+            Ok(gssapi::AcceptResult::Complete(buf, name)) => {
                 let str_name =
                     String::from(str::from_utf8(name.display_name().unwrap().as_bytes()).unwrap());
-                Msg::Accepted(str_name.clone())
+                Msg::Accepted(Vec::from(buf.as_bytes()), str_name.clone())
             }
             Ok(gssapi::AcceptResult::ContinueNeeded(buf)) => {
                 Msg::ContinueNeeded(Vec::from(buf.as_bytes()))
@@ -59,7 +59,7 @@ impl GSSWorker {
     pub fn accept_sec_context(&self, input_token: Vec<u8>) -> AcceptResult {
         self.cmd_channel.send(Cmd::Accept(input_token)).unwrap();
         match self.msg_channel.recv().unwrap() {
-            Msg::Accepted(s) => AcceptResult::Accepted(s),
+            Msg::Accepted(v, s) => AcceptResult::Accepted(v, s),
             Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
             Msg::Failed(e) => AcceptResult::Failed(e),
         }
