@@ -7,13 +7,18 @@ extern crate hyper;
 extern crate lazy_static;
 extern crate rand;
 extern crate tokio;
+#[macro_use]
+extern crate structopt;
 
 use std::sync::{Arc, Mutex};
 
+mod configuration;
 mod gssapi;
 mod gssapi_worker;
+use configuration::Configuration;
 use futures::prelude::*;
 use gssapi_worker::GSSWorker;
+use structopt::StructOpt;
 
 use hyper::client::{Client, HttpConnector};
 use hyper::service::Service;
@@ -37,6 +42,7 @@ type ResponseFuture = Future<Item = Response<Body>, Error = String> + Send;
 
 lazy_static! {
     static ref http_client: Arc<Mutex<Client<HttpConnector>>> = Arc::new(Mutex::new(Client::new()));
+    static ref current_config: Configuration = Configuration::from_args();
 }
 
 fn new_session() -> ClientSession {
@@ -131,12 +137,13 @@ fn proxy_request(
     _user: &str,
     authenticate: &[u8],
 ) -> Box<ResponseFuture> {
+    let backend_uri = format!("{}{}", current_config.backend, req.uri());
+    println!("Requesting {}", backend_uri);
     let new_request = builder_from_request(&req)
         .version(http::Version::HTTP_11)
-        .uri(format!("http://127.0.0.1:3001{}", req.uri()))
+        .uri(backend_uri)
         .body(req.into_body())
         .unwrap();
-    println!("Requesting {}", new_request.uri());
 
     let auth_header = if !authenticate.is_empty() {
         Some(
@@ -189,7 +196,7 @@ fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
-    let addr = ([10, 0, 0, 2], 3000).into();
+    let addr = current_config.bind.parse().unwrap();
 
     let new_service = || Ok::<_, String>(new_session());
     let server = Server::bind(&addr).serve(new_service);
