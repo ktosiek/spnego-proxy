@@ -3,8 +3,12 @@ extern crate futures;
 extern crate gssapi_sys;
 extern crate http;
 extern crate hyper;
+#[macro_use]
+extern crate lazy_static;
 extern crate rand;
 extern crate tokio;
+
+use std::sync::{Arc, Mutex};
 
 mod gssapi;
 mod gssapi_worker;
@@ -21,12 +25,16 @@ struct ClientSession {
 
 enum AuthState {
     InProgress(GSSWorker),
-    Ok(String, Client<HttpConnector>),
+    Ok(String),
 }
 
 enum Either<L, R> {
     Left(L),
     Right(R),
+}
+
+lazy_static! {
+    static ref http_client: Arc<Mutex<Client<HttpConnector>>> = Arc::new(Mutex::new(Client::new()));
 }
 
 fn new_session<'a>() -> ClientSession {
@@ -64,9 +72,9 @@ fn handle_request(
         (Some(token), AuthState::InProgress(gss_worker)) => {
             match continue_authentication(gss_worker, token) {
                 Either::Left((output, user)) => {
-                    let client = Client::new();
+                    let client = http_client.lock().unwrap();
                     let response = proxy_request(req, &client, &user, &output);
-                    (Some(AuthState::Ok(user, client)), response)
+                    (Some(AuthState::Ok(user)), response)
                 }
                 Either::Right(response) => (None, response),
             }
@@ -76,7 +84,10 @@ fn handle_request(
             Box::new(futures::done(authorization_request(&vec![])))
                 as Box<Future<Item = Response<Body>, Error = String> + Send>,
         ),
-        (_, AuthState::Ok(user, client)) => (None, proxy_request(req, client, &user, &vec![])),
+        (_, AuthState::Ok(user)) => {
+            let client = http_client.lock().unwrap();
+            (None, proxy_request(req, &client, &user, &vec![]))
+        }
     };
     match state {
         Some(s) => {

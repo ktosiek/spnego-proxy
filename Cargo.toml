@@ -11,6 +11,7 @@ rand = "0.5"
 gssapi-sys = "0.2"
 base64 = "0.9"
 http = "0.1.7"
+lazy_static = "1.0"
 
 [[bin]]
 name = "spnego-proxy"
