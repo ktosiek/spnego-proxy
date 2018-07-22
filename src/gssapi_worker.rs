@@ -54,8 +54,10 @@ impl GSSWorker {
     }
 
     // TODO: a future
-    pub fn accept_sec_context(&self, input_token: Vec<u8>) -> AcceptResult {
-        self.cmd_channel.send(Cmd::Accept(input_token)).unwrap();
+    pub fn accept_sec_context(&self, input_token: &[u8]) -> AcceptResult {
+        self.cmd_channel
+            .send(Cmd::Accept(Vec::from(input_token)))
+            .unwrap();
         match self.msg_channel.recv().unwrap() {
             Msg::Accepted(v, s) => AcceptResult::Accepted(v, s),
             Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
@@ -64,6 +66,7 @@ impl GSSWorker {
     }
 }
 
+#[allow(needless_pass_by_value)]
 fn worker_thread(inbox: Receiver<Cmd>, outbox: Sender<Msg>) {
     let mut context = gssapi::GSSContext::new();
 

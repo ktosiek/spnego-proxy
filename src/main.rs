@@ -33,11 +33,13 @@ enum Either<L, R> {
     Right(R),
 }
 
+type ResponseFuture = Future<Item = Response<Body>, Error = String> + Send;
+
 lazy_static! {
     static ref http_client: Arc<Mutex<Client<HttpConnector>>> = Arc::new(Mutex::new(Client::new()));
 }
 
-fn new_session<'a>() -> ClientSession {
+fn new_session() -> ClientSession {
     ClientSession {
         state: AuthState::InProgress(GSSWorker::new()),
     }
@@ -59,10 +61,7 @@ impl Service for ClientSession {
     }
 }
 
-fn handle_request(
-    session: &mut ClientSession,
-    req: Request<Body>,
-) -> Box<Future<Item = Response<Body>, Error = String> + Send> {
+fn handle_request(session: &mut ClientSession, req: Request<Body>) -> Box<ResponseFuture> {
     let authenticate = req
         .headers()
         .get("Authorization")
@@ -81,24 +80,20 @@ fn handle_request(
         }
         (None, AuthState::InProgress(_)) => (
             None,
-            Box::new(futures::done(authorization_request(&vec![])))
-                as Box<Future<Item = Response<Body>, Error = String> + Send>,
+            Box::new(futures::done(authorization_request(&[]))) as Box<ResponseFuture>,
         ),
         (_, AuthState::Ok(user)) => {
             let client = http_client.lock().unwrap();
-            (None, proxy_request(req, &client, &user, &vec![]))
+            (None, proxy_request(req, &client, &user, &[]))
         }
     };
-    match state {
-        Some(s) => {
-            session.state = s;
-        }
-        _ => {}
+    if let Some(s) = state {
+        session.state = s;
     }
     response
 }
 
-fn authorization_request(token: &Vec<u8>) -> Result<Response<Body>, String> {
+fn authorization_request(token: &[u8]) -> Result<Response<Body>, String> {
     let authenticate = if token.is_empty() {
         String::from("Negotiate")
     } else {
@@ -113,9 +108,9 @@ fn authorization_request(token: &Vec<u8>) -> Result<Response<Body>, String> {
 
 fn continue_authentication(
     gss_worker: &GSSWorker,
-    token: &Vec<u8>,
-) -> Either<(Vec<u8>, String), Box<Future<Item = Response<Body>, Error = String> + Send>> {
-    match gss_worker.accept_sec_context(token.clone()) {
+    token: &[u8],
+) -> Either<(Vec<u8>, String), Box<ResponseFuture>> {
+    match gss_worker.accept_sec_context(token) {
         gssapi_worker::AcceptResult::Accepted(output, user) => Either::Left((output, user)),
         gssapi_worker::AcceptResult::ContinueNeeded(output) => {
             Either::Right(Box::new(futures::done(authorization_request(&output))))
@@ -133,9 +128,9 @@ fn continue_authentication(
 fn proxy_request(
     req: Request<Body>,
     client: &Client<HttpConnector>,
-    _user: &String,
-    authenticate: &Vec<u8>,
-) -> Box<Future<Item = Response<Body>, Error = String> + Send> {
+    _user: &str,
+    authenticate: &[u8],
+) -> Box<ResponseFuture> {
     let new_request = builder_from_request(&req)
         .version(http::Version::HTTP_11)
         .uri(format!("http://127.0.0.1:3001{}", req.uri()))
@@ -156,7 +151,7 @@ fn proxy_request(
     Box::new(
         client
             .request(new_request)
-            .or_else(|e| futures::done(Ok(error_response(e))))
+            .or_else(|e| futures::done(Ok(error_response(&e))))
             .map(|mut response| {
                 if let Some(val) = auth_header {
                     response.headers_mut().insert("WWW-Authenticate", val);
@@ -178,7 +173,7 @@ fn builder_from_request(req: &Request<Body>) -> ::http::request::Builder {
     r
 }
 
-fn error_response<E: ::std::error::Error>(err: E) -> Response<Body> {
+fn error_response<E: ::std::error::Error>(err: &E) -> Response<Body> {
     Response::builder()
         .status(500)
         .body(Body::from(format!("Internal error: {}", err)))
@@ -186,10 +181,11 @@ fn error_response<E: ::std::error::Error>(err: E) -> Response<Body> {
 }
 
 fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {
-    if !raw.starts_with("Negotiate ") {
-        return None;
+    if raw.starts_with("Negotiate ") {
+        base64::decode(&raw[10..]).ok()
+    } else {
+        None
     }
-    return base64::decode(&raw[10..]).ok();
 }
 
 fn main() {
