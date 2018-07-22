@@ -57,10 +57,6 @@ pub struct AppBuffer<'a> {
 }
 
 impl<'a> AppBuffer<'a> {
-    fn as_gss_buffer_mut(&mut self) -> gssapi_sys::gss_buffer_t {
-        &mut self.raw
-    }
-
     fn as_gss_buffer(&self) -> *const gssapi_sys::gss_buffer_desc_struct {
         &self.raw
     }
@@ -144,10 +140,6 @@ pub struct GSSName {
 impl GSSName {
     fn from_raw(name: *mut gssapi_sys::gss_name_struct) -> GSSName {
         GSSName { name }
-    }
-
-    fn as_gss_name_mut(&mut self) -> *mut gssapi_sys::gss_name_struct {
-        self.name
     }
 
     pub fn display_name(&self) -> Option<GSSBuffer> {

@@ -1,6 +1,5 @@
 use gssapi;
 use gssapi::GSSError;
-use std::collections::HashMap;
 use std::str;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -41,17 +40,16 @@ impl Msg {
 pub struct GSSWorker {
     cmd_channel: Sender<Cmd>,
     msg_channel: Receiver<Msg>,
-    worker: ::std::thread::JoinHandle<()>,
 }
 
 impl GSSWorker {
     pub fn new() -> GSSWorker {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (msg_tx, msg_rx) = mpsc::channel();
+        ::std::thread::spawn(move || worker_thread(cmd_rx, msg_tx));
         GSSWorker {
             cmd_channel: cmd_tx,
             msg_channel: msg_rx,
-            worker: ::std::thread::spawn(move || worker_thread(cmd_rx, msg_tx)),
         }
     }
 

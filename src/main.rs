@@ -6,11 +6,6 @@ extern crate hyper;
 extern crate rand;
 extern crate tokio;
 
-use std::collections::HashMap;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
-
 mod gssapi;
 mod gssapi_worker;
 use futures::prelude::*;
@@ -18,12 +13,9 @@ use gssapi_worker::GSSWorker;
 
 use hyper::client::{Client, HttpConnector};
 use hyper::service::Service;
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
-
-use rand::Rng;
+use hyper::{Body, Request, Response, Server, StatusCode};
 
 struct ClientSession {
-    id: u64,
     state: AuthState,
 }
 
@@ -39,7 +31,6 @@ enum Either<L, R> {
 
 fn new_session<'a>() -> ClientSession {
     ClientSession {
-        id: rand::thread_rng().gen_range(0, 1 << 64 - 1),
         state: AuthState::InProgress(GSSWorker::new()),
     }
 }
@@ -74,7 +65,7 @@ fn handle_request(
             match continue_authentication(gss_worker, token) {
                 Either::Left((output, user)) => {
                     let client = Client::new();
-                    let response = proxy_request(req, session, &client, &user, &output);
+                    let response = proxy_request(req, &client, &user, &output);
                     (Some(AuthState::Ok(user, client)), response)
                 }
                 Either::Right(response) => (None, response),
@@ -85,9 +76,7 @@ fn handle_request(
             Box::new(futures::done(authorization_request(&vec![])))
                 as Box<Future<Item = Response<Body>, Error = String> + Send>,
         ),
-        (_, AuthState::Ok(user, client)) => {
-            (None, proxy_request(req, session, client, &user, &vec![]))
-        }
+        (_, AuthState::Ok(user, client)) => (None, proxy_request(req, client, &user, &vec![])),
     };
     match state {
         Some(s) => {
@@ -132,9 +121,8 @@ fn continue_authentication(
 
 fn proxy_request(
     req: Request<Body>,
-    session: &ClientSession,
     client: &Client<HttpConnector>,
-    user: &String,
+    _user: &String,
     authenticate: &Vec<u8>,
 ) -> Box<Future<Item = Response<Body>, Error = String> + Send> {
     let new_request = builder_from_request(&req)
