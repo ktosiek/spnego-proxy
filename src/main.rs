@@ -1,6 +1,7 @@
 extern crate base64;
 extern crate futures;
 extern crate gssapi_sys;
+extern crate http;
 extern crate hyper;
 extern crate rand;
 extern crate tokio;
@@ -15,6 +16,7 @@ mod gssapi_worker;
 use futures::prelude::*;
 use gssapi_worker::GSSWorker;
 
+use hyper::client::{Client, HttpConnector};
 use hyper::service::Service;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 
@@ -27,7 +29,7 @@ struct ClientSession {
 
 enum AuthState {
     InProgress(GSSWorker),
-    Ok(String),
+    Ok(String, Client<HttpConnector>),
 }
 
 enum Either<L, R> {
@@ -71,29 +73,21 @@ fn handle_request(
         (Some(token), AuthState::InProgress(gss_worker)) => {
             match continue_authentication(gss_worker, token) {
                 Either::Left((output, user)) => {
-                    let response = proxy_request(req, session, &user, &output);
-                    (Some(AuthState::Ok(user)), response)
+                    let client = Client::new();
+                    let response = proxy_request(req, session, &client, &user, &output);
+                    (Some(AuthState::Ok(user, client)), response)
                 }
                 Either::Right(response) => (None, response),
             }
         }
-        (Some(token), AuthState::Ok(_)) => {
-            println!("Got Authorization header on an authorized connection");
-            let gss_worker = GSSWorker::new();
-            match continue_authentication(&gss_worker, token) {
-                Either::Left((output, user)) => {
-                    let response = proxy_request(req, session, &user, &output);
-                    (Some(AuthState::Ok(user)), response)
-                }
-                Either::Right(response) => (Some(AuthState::InProgress(gss_worker)), response),
-            }
-        }
-        (None, AuthState::Ok(user)) => (None, proxy_request(req, session, &user, &vec![])),
         (None, AuthState::InProgress(_)) => (
             None,
             Box::new(futures::done(authorization_request(&vec![])))
                 as Box<Future<Item = Response<Body>, Error = String> + Send>,
         ),
+        (_, AuthState::Ok(user, client)) => {
+            (None, proxy_request(req, session, client, &user, &vec![]))
+        }
     };
     match state {
         Some(s) => {
@@ -139,25 +133,57 @@ fn continue_authentication(
 fn proxy_request(
     req: Request<Body>,
     session: &ClientSession,
+    client: &Client<HttpConnector>,
     user: &String,
     authenticate: &Vec<u8>,
 ) -> Box<Future<Item = Response<Body>, Error = String> + Send> {
-    // TODO: Proxy
-    let mut response = Response::builder();
-    if !authenticate.is_empty() {
-        response.header(
-            "WWW-Authenticate",
-            format!("Negotiate {}", base64::encode(authenticate)).as_bytes(),
-        );
+    let new_request = builder_from_request(&req)
+        .version(http::Version::HTTP_11)
+        .uri(format!("http://127.0.0.1:3001{}", req.uri()))
+        .body(req.into_body())
+        .unwrap();
+    println!("Requesting {}", new_request.uri());
+
+    let auth_header = if !authenticate.is_empty() {
+        Some(
+            http::header::HeaderValue::from_str(
+                format!("Negotiate {}", base64::encode(authenticate)).as_str(),
+            ).unwrap(),
+        )
+    } else {
+        None
+    };
+
+    Box::new(
+        client
+            .request(new_request)
+            .or_else(|e| futures::done(Ok(error_response(e))))
+            .map(|mut response| {
+                if let Some(val) = auth_header {
+                    response.headers_mut().insert("WWW-Authenticate", val);
+                }
+                *response.version_mut() = http::Version::HTTP_11;
+
+                response
+            }),
+    )
+}
+
+fn builder_from_request(req: &Request<Body>) -> ::http::request::Builder {
+    let mut r = Request::builder();
+    r.method(req.method().as_str()).uri(req.uri());
+
+    for (key, value) in req.headers().iter() {
+        r.header(key.as_str(), value.as_bytes());
     }
-    Box::new(futures::done(
-        response
-            .body(Body::from(format!(
-                "Session {}\nUser: {}\n",
-                session.id, user
-            )))
-            .map_err(|e| format!("{:?}", e)),
-    ))
+    r
+}
+
+fn error_response<E: ::std::error::Error>(err: E) -> Response<Body> {
+    Response::builder()
+        .status(500)
+        .body(Body::from(format!("Internal error: {}", err)))
+        .unwrap()
 }
 
 fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {

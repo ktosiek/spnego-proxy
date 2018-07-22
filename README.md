@@ -7,12 +7,13 @@ TODO:
 [ ] Mutual auth
 [ ] Less .unwrap()
 [x] Always check major/minor GSS codes
-[ ] Logging
+[ ] Logging (and hiding some errors from the client)
 [ ] Move to raw tokio (hyper hides the peer info), or even raw sockets/splice (any good select() lib?)
 [ ] Web workers bound to threads? GSS-API is not Send/Sync
 [ ] Authorization
-[ ] Actual proxying
+[x] Actual proxying
 [ ] Configuration file
+[ ] HTTPS support for server and client
 
 Hacking
 -------
