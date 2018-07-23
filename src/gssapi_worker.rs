@@ -78,7 +78,7 @@ fn worker_thread(inbox: Receiver<Cmd>, outbox: Sender<Msg>) {
                 &gssapi::AppBuffer::from(&bytes),
             )),
             Err(_) => {
-                println!("Stopping thread");
+                debug!("Stopping thread");
                 return;
             }
         };

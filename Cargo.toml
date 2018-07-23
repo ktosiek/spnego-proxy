@@ -13,6 +13,8 @@ base64 = "0.9"
 http = "0.1.7"
 lazy_static = "1.0"
 structopt = "0.2"
+log = "0.4"
+stderrlog = "0.4"
 
 [[bin]]
 name = "spnego-proxy"

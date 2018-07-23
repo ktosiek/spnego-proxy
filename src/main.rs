@@ -4,6 +4,9 @@ extern crate gssapi_sys;
 extern crate http;
 extern crate hyper;
 #[macro_use]
+extern crate log;
+extern crate stderrlog;
+#[macro_use]
 extern crate lazy_static;
 extern crate rand;
 extern crate tokio;
@@ -72,7 +75,7 @@ fn handle_request(session: &mut ClientSession, req: Request<Body>) -> Box<Respon
         .headers()
         .get("Authorization")
         .and_then(|h| parse_authorization_header(h.to_str().unwrap()));
-    println!("Authorization: {:?}", authenticate);
+    trace!("Authorization: {:?}", authenticate);
     let (state, response) = match (&authenticate, &session.state) {
         (Some(token), AuthState::InProgress(gss_worker)) => {
             match continue_authentication(gss_worker, token) {
@@ -138,7 +141,7 @@ fn proxy_request(
     authenticate: &[u8],
 ) -> Box<ResponseFuture> {
     let backend_uri = format!("{}{}", current_config.backend, req.uri());
-    println!("Requesting {}", backend_uri);
+    info!("Requesting {}", backend_uri);
     let new_request = builder_from_request(&req)
         .version(http::Version::HTTP_11)
         .uri(backend_uri)
@@ -181,9 +184,10 @@ fn builder_from_request(req: &Request<Body>) -> ::http::request::Builder {
 }
 
 fn error_response<E: ::std::error::Error>(err: &E) -> Response<Body> {
+    error!("Error when requesting {}", err);
     Response::builder()
         .status(500)
-        .body(Body::from(format!("Internal error: {}", err)))
+        .body(Body::from("Internal server error"))
         .unwrap()
 }
 
@@ -196,11 +200,22 @@ fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    stderrlog::new()
+        .module(module_path!())
+        .verbosity(current_config.verbosity)
+        .timestamp(
+            current_config
+                .log_timestamp
+                .unwrap_or(stderrlog::Timestamp::Off),
+        )
+        .init()
+        .unwrap();
+
     let addr = current_config.bind.parse().unwrap();
 
     let new_service = || Ok::<_, String>(new_session());
     let server = Server::bind(&addr).serve(new_service);
 
-    println!("Listening on http://{}", addr);
-    hyper::rt::run(server.map_err(|err| eprintln!("server error: {}", err)));
+    info!("Listening on http://{}", addr);
+    hyper::rt::run(server.map_err(|err| error!("server error: {}", err)));
 }

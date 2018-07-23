@@ -1,3 +1,5 @@
+use stderrlog;
+
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "spnego-proxy",
@@ -12,4 +14,13 @@ pub struct Configuration {
     pub bind: String,
     #[structopt(help = "Backend behind the proxy", long = "backend")]
     pub backend: String,
+
+    // Logging {
+    /// Verbose mode (-v, -vv, -vvv, etc)
+    #[structopt(short = "v", long = "verbose", parse(from_occurrences))]
+    pub verbosity: usize,
+    /// Timestamp (sec, ms, ns, none)
+    #[structopt(long = "log-timestamp")]
+    pub log_timestamp: Option<stderrlog::Timestamp>,
+    // }
 }
