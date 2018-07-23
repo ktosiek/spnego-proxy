@@ -4,7 +4,7 @@ SPNEGO Proxy
 WIP: A small reverse HTTP proxy for authenticating clients with SPNEGO.
 
 TODO:
-[ ] Mutual auth
+[x] Mutual auth (adding the last output token to first proxied response should be enough?)
 [ ] Less .unwrap()
 [x] Always check major/minor GSS codes
 [ ] Logging (and hiding some errors from the client)
