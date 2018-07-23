@@ -7,7 +7,7 @@ TODO:
 [x] Mutual auth (adding the last output token to first proxied response should be enough?)
 [ ] Less .unwrap()
 [x] Always check major/minor GSS codes
-[ ] Logging (and hiding some errors from the client)
+[x] Logging (and hiding some errors from the client)
 [ ] Move to raw tokio (hyper hides the peer info), or even raw sockets/splice
 [ ] Web workers bound to threads? GSS-API is not Send/Sync
 [ ] Authorization

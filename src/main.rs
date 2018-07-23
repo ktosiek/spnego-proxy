@@ -124,13 +124,16 @@ fn continue_authentication(
         gssapi_worker::AcceptResult::ContinueNeeded(output) => {
             Either::Right(Box::new(futures::done(authorization_request(&output))))
         }
-        gssapi_worker::AcceptResult::Failed(err) => Either::Right(Box::new(futures::done(
-            Response::builder()
-                .header("WWW-Authenticate", "Negotiate")
-                .status(StatusCode::UNAUTHORIZED)
-                .body(Body::from(format!("Authorization failed: {}", err)))
-                .map_err(|e| format!("{:?}", e)),
-        ))),
+        gssapi_worker::AcceptResult::Failed(err) => {
+            info!("Authentication failed: {}", err);
+            Either::Right(Box::new(futures::done(
+                Response::builder()
+                    .header("WWW-Authenticate", "Negotiate")
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Body::from("Authentication failed"))
+                    .map_err(|e| format!("{:?}", e)),
+            )))
+        }
     }
 }
 
