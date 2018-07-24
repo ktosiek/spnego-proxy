@@ -1,3 +1,5 @@
+use futures::sync::oneshot;
+use futures::Future;
 use gssapi;
 use gssapi::GSSError;
 use std::str;
@@ -8,6 +10,7 @@ pub enum Cmd {
     Accept(Vec<u8>),
 }
 
+#[derive(Debug)]
 pub enum Msg {
     ContinueNeeded(Vec<u8>),
     Accepted(Vec<u8>, String),
@@ -38,50 +41,46 @@ impl Msg {
 }
 
 pub struct GSSWorker {
-    cmd_channel: Sender<Cmd>,
-    msg_channel: Receiver<Msg>,
+    cmd_channel: Sender<(Cmd, oneshot::Sender<Msg>)>,
 }
 
 impl GSSWorker {
     pub fn new() -> GSSWorker {
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        let (msg_tx, msg_rx) = mpsc::channel();
-        ::std::thread::spawn(move || worker_thread(cmd_rx, msg_tx));
+        ::std::thread::spawn(move || worker_thread(cmd_rx));
         GSSWorker {
             cmd_channel: cmd_tx,
-            msg_channel: msg_rx,
         }
     }
 
     // TODO: a future
     pub fn accept_sec_context(&self, input_token: &[u8]) -> AcceptResult {
+        let (msg_tx, msg_rx) = oneshot::channel();
         self.cmd_channel
-            .send(Cmd::Accept(Vec::from(input_token)))
+            .send((Cmd::Accept(Vec::from(input_token)), msg_tx))
             .unwrap();
-        match self.msg_channel.recv().unwrap() {
-            Msg::Accepted(v, s) => AcceptResult::Accepted(v, s),
-            Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
-            Msg::Failed(e) => AcceptResult::Failed(e),
-        }
+        msg_rx
+            .map(|r| match r {
+                Msg::Accepted(v, s) => AcceptResult::Accepted(v, s),
+                Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
+                Msg::Failed(e) => AcceptResult::Failed(e),
+            })
+            .wait()
+            .unwrap()
     }
 }
 
-#[allow(needless_pass_by_value)]
-fn worker_thread(inbox: Receiver<Cmd>, outbox: Sender<Msg>) {
+fn worker_thread(inbox: Receiver<(Cmd, oneshot::Sender<Msg>)>) {
     let mut context = gssapi::GSSContext::new();
 
-    loop {
-        let msg = inbox.recv();
-        let response = match msg {
-            Ok(Cmd::Accept(bytes)) => Msg::from(gssapi::accept_sec_context(
+    for (cmd, output) in inbox {
+        let response = match cmd {
+            Cmd::Accept(bytes) => Msg::from(gssapi::accept_sec_context(
                 &mut context,
                 &gssapi::AppBuffer::from(&bytes),
             )),
-            Err(_) => {
-                debug!("Stopping thread");
-                return;
-            }
         };
-        outbox.send(response).unwrap();
+        output.send(response).unwrap();
     }
+    debug!("Stopping thread");
 }
