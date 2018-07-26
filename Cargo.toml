@@ -1,7 +1,10 @@
+cargo-features = ["edition"]
+
 [package]
 name = "spnego-proxy"
 version = "0.1.0"
 authors = ["Tomasz Kontusz <tomasz.kontusz@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 tokio = "0.1"

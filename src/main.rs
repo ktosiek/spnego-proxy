@@ -1,15 +1,8 @@
-extern crate base64;
-extern crate futures;
-extern crate gssapi_sys;
-extern crate http;
-extern crate hyper;
+#![feature(rust_2018_preview)]
 #[macro_use]
 extern crate log;
-extern crate stderrlog;
 #[macro_use]
 extern crate lazy_static;
-extern crate rand;
-extern crate tokio;
 #[macro_use]
 extern crate structopt;
 
@@ -18,9 +11,9 @@ use std::sync::{Arc, Mutex};
 mod configuration;
 mod gssapi;
 mod gssapi_worker;
-use configuration::Configuration;
+use self::configuration::Configuration;
+use self::gssapi_worker::GSSWorker;
 use futures::prelude::*;
-use gssapi_worker::GSSWorker;
 use structopt::StructOpt;
 
 use hyper::client::{Client, HttpConnector};

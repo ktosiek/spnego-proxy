@@ -1,7 +1,7 @@
+use super::gssapi;
+use super::gssapi::GSSError;
 use futures::sync::oneshot;
 use futures::Future;
-use gssapi;
-use gssapi::GSSError;
 use std::str;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
