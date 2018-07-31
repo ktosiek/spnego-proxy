@@ -1,11 +1,14 @@
 use super::gssapi;
 use super::gssapi::GSSError;
+use futures::sink::Sink;
+use futures::stream::Stream;
+use futures::sync::mpsc;
+use futures::sync::mpsc::{Receiver, Sender};
 use futures::sync::oneshot;
 use futures::Future;
 use std::str;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
 
+#[derive(Debug)]
 pub enum Cmd {
     Accept(Vec<u8>),
 }
@@ -40,40 +43,48 @@ impl Msg {
     }
 }
 
+#[derive(Debug)]
 pub struct GSSWorker {
     cmd_channel: Sender<(Cmd, oneshot::Sender<Msg>)>,
 }
 
 impl GSSWorker {
     pub fn new() -> GSSWorker {
-        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel(0);
         ::std::thread::spawn(move || worker_thread(cmd_rx));
         GSSWorker {
             cmd_channel: cmd_tx,
         }
     }
 
-    // TODO: a future
-    pub fn accept_sec_context(&self, input_token: &[u8]) -> AcceptResult {
+    pub fn accept_sec_context(
+        &self,
+        input_token: &[u8],
+    ) -> Box<dyn Future<Item = AcceptResult, Error = String> + Send> {
         let (msg_tx, msg_rx) = oneshot::channel();
-        self.cmd_channel
-            .send((Cmd::Accept(Vec::from(input_token)), msg_tx))
-            .unwrap();
-        msg_rx
-            .map(|r| match r {
-                Msg::Accepted(v, s) => AcceptResult::Accepted(v, s),
-                Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
-                Msg::Failed(e) => AcceptResult::Failed(e),
-            })
-            .wait()
-            .unwrap()
+        Box::new(
+            self.cmd_channel
+                .clone()
+                .send((Cmd::Accept(Vec::from(input_token)), msg_tx))
+                .map_err(|_e| String::from("Worker thread died"))
+                .and_then(|_| {
+                    msg_rx
+                        .map(|r| match r {
+                            Msg::Accepted(v, s) => AcceptResult::Accepted(v, s),
+                            Msg::ContinueNeeded(v) => AcceptResult::ContinueNeeded(v),
+                            Msg::Failed(e) => AcceptResult::Failed(e),
+                        })
+                        .map_err(|_e| String::from("Worker thread died"))
+                }),
+        )
     }
 }
 
 fn worker_thread(inbox: Receiver<(Cmd, oneshot::Sender<Msg>)>) {
     let mut context = gssapi::GSSContext::new();
+    let mut inbox_iter = inbox.wait().into_iter();
 
-    for (cmd, output) in inbox {
+    while let Some(Ok((cmd, output))) = inbox_iter.next() {
         let response = match cmd {
             Cmd::Accept(bytes) => Msg::from(gssapi::accept_sec_context(
                 &mut context,

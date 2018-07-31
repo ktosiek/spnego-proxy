@@ -20,10 +20,14 @@ use hyper::client::{Client, HttpConnector};
 use hyper::service::Service;
 use hyper::{Body, Request, Response, Server, StatusCode};
 
+#[derive(Debug)]
 struct ClientSession {
     state: AuthState,
 }
 
+struct ClientService(Arc<Mutex<ClientSession>>);
+
+#[derive(Debug)]
 enum AuthState {
     InProgress(GSSWorker),
     Ok(String),
@@ -34,6 +38,7 @@ enum Either<L, R> {
     Right(R),
 }
 
+type BoxFuture<I> = Box<Future<Item = I, Error = String> + Send>;
 type ResponseFuture = Future<Item = Response<Body>, Error = String> + Send;
 
 lazy_static! {
@@ -41,13 +46,14 @@ lazy_static! {
     static ref current_config: Configuration = Configuration::from_args();
 }
 
-fn new_session() -> ClientSession {
-    ClientSession {
-        state: AuthState::InProgress(GSSWorker::new()),
-    }
+fn new_session() -> ClientService {
+    let worker = GSSWorker::new();
+    ClientService(Arc::new(Mutex::new(ClientSession {
+        state: AuthState::InProgress(worker),
+    })))
 }
 
-impl Service for ClientSession {
+impl Service for ClientService {
     // this is the body gives you
     type ReqBody = hyper::Body;
     // you could change this to a custom `Payload` impl if you wanted
@@ -59,43 +65,59 @@ impl Service for ClientSession {
     type Future = Box<Future<Item = Response<Self::ResBody>, Error = Self::Error> + Send>;
 
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
-        handle_request(self, req)
+        handle_request(self.0.clone(), req)
     }
 }
 
-fn handle_request(session: &mut ClientSession, req: Request<Body>) -> Box<ResponseFuture> {
+fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> Box<ResponseFuture> {
     let authenticate = req
         .headers()
         .get("Authorization")
         .and_then(|h| parse_authorization_header(h.to_str().unwrap()));
     trace!("Authorization: {:?}", authenticate);
-    let (state, response) = match (&authenticate, &session.state) {
-        (Some(token), AuthState::InProgress(gss_worker)) => {
-            match continue_authentication(gss_worker, token) {
-                Either::Left((output, user)) => {
-                    let client = http_client.lock().unwrap();
-                    let response = proxy_request(req, &client, &user, &output);
-                    (Some(AuthState::Ok(user)), response)
+
+    Box::new(
+        {
+            let session_mm = session_m.clone();
+            let session = session_mm.lock().unwrap();
+            match (&authenticate, &session.state) {
+                (Some(token), AuthState::InProgress(gss_worker)) => Box::new(
+                    continue_authentication(gss_worker, token).and_then(|r| match r {
+                        Either::Left((output, user)) => {
+                            let client = http_client.lock().unwrap();
+                            Box::new(
+                                proxy_request(req, &client, &user, &output)
+                                    .map(|response| (Some(AuthState::Ok(user)), response)),
+                            )
+                                as Box<dyn Future<Item = _, Error = _> + Send>
+                        }
+                        Either::Right(response) => Box::new(futures::done(Ok((None, response))))
+                            as Box<dyn Future<Item = _, Error = _> + Send>,
+                    }),
+                ),
+                (None, AuthState::InProgress(_)) => {
+                    Box::new(futures::done(Ok((None, authorization_request(&[])))))
+                        as Box<dyn Future<Item = _, Error = _> + Send>
                 }
-                Either::Right(response) => (None, response),
+                (_, AuthState::Ok(user)) => {
+                    let client = http_client.lock().unwrap();
+                    Box::new(
+                        proxy_request(req, &client, &user, &[]).map(|response| (None, response)),
+                    ) as Box<dyn Future<Item = _, Error = _> + Send>
+                }
             }
-        }
-        (None, AuthState::InProgress(_)) => (
-            None,
-            Box::new(futures::done(authorization_request(&[]))) as Box<ResponseFuture>,
-        ),
-        (_, AuthState::Ok(user)) => {
-            let client = http_client.lock().unwrap();
-            (None, proxy_request(req, &client, &user, &[]))
-        }
-    };
-    if let Some(s) = state {
-        session.state = s;
-    }
-    response
+        }.and_then(move |(state, response)| {
+            let mut sess = session_m.lock().unwrap();
+            debug!("Setting state {:?}", state);
+            if let Some(s) = state {
+                sess.state = s;
+            }
+            Ok(response)
+        }),
+    )
 }
 
-fn authorization_request(token: &[u8]) -> Result<Response<Body>, String> {
+fn authorization_request(token: &[u8]) -> Response<Body> {
     let authenticate = if token.is_empty() {
         String::from("Negotiate")
     } else {
@@ -105,29 +127,28 @@ fn authorization_request(token: &[u8]) -> Result<Response<Body>, String> {
         .header("WWW-Authenticate", authenticate.as_bytes())
         .status(StatusCode::UNAUTHORIZED)
         .body(Body::from("No Authorization"))
-        .map_err(|e| format!("{:?}", e))
+        .unwrap()
 }
 
 fn continue_authentication(
     gss_worker: &GSSWorker,
     token: &[u8],
-) -> Either<(Vec<u8>, String), Box<ResponseFuture>> {
-    match gss_worker.accept_sec_context(token) {
-        gssapi_worker::AcceptResult::Accepted(output, user) => Either::Left((output, user)),
+) -> BoxFuture<Either<(Vec<u8>, String), Response<Body>>> {
+    Box::new(gss_worker.accept_sec_context(token).and_then(|r| match r {
+        gssapi_worker::AcceptResult::Accepted(output, user) => Ok(Either::Left((output, user))),
         gssapi_worker::AcceptResult::ContinueNeeded(output) => {
-            Either::Right(Box::new(futures::done(authorization_request(&output))))
+            Ok(Either::Right(authorization_request(&output)))
         }
         gssapi_worker::AcceptResult::Failed(err) => {
             info!("Authentication failed: {}", err);
-            Either::Right(Box::new(futures::done(
-                Response::builder()
-                    .header("WWW-Authenticate", "Negotiate")
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body(Body::from("Authentication failed"))
-                    .map_err(|e| format!("{:?}", e)),
-            )))
+            Response::builder()
+                .header("WWW-Authenticate", "Negotiate")
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::from("Authentication failed"))
+                .map_err(|e| format!("{:?}", e))
+                .map(Either::Right)
         }
-    }
+    }))
 }
 
 fn proxy_request(
