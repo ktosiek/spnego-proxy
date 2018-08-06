@@ -46,8 +46,10 @@ enum Either<L, R> {
 }
 
 type BoxFuture<I> = Box<Future<Item = I, Error = String> + Send>;
-type ResponseFuture = Future<Item = Response<Body>, Error = String> + Send;
+type ResponseFuture = Future<Item = HttpResponse, Error = String> + Send;
 type HttpClient = Client<HttpsConnector<HttpConnector>>;
+type HttpRequest = Request<Body>;
+type HttpResponse = Response<Body>;
 
 fn new_session(app_state: &'static AppState) -> ClientService {
     let worker = GSSWorker::new();
@@ -86,7 +88,7 @@ impl Service for ClientService {
     }
 }
 
-fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> Box<ResponseFuture> {
+fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: HttpRequest) -> Box<ResponseFuture> {
     let authenticate = req
         .headers()
         .get("Authorization")
@@ -131,7 +133,7 @@ fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> B
     )
 }
 
-fn authorization_request(token: &[u8]) -> Response<Body> {
+fn authorization_request(token: &[u8]) -> HttpResponse {
     let authenticate = if token.is_empty() {
         String::from("Negotiate")
     } else {
@@ -147,7 +149,7 @@ fn authorization_request(token: &[u8]) -> Response<Body> {
 fn continue_authentication(
     gss_worker: &GSSWorker,
     token: &[u8],
-) -> BoxFuture<Either<(Vec<u8>, String), Response<Body>>> {
+) -> BoxFuture<Either<(Vec<u8>, String), HttpResponse>> {
     Box::new(gss_worker.accept_sec_context(token).and_then(|r| match r {
         gssapi_worker::AcceptResult::Accepted(output, user) => Ok(Either::Left((output, user))),
         gssapi_worker::AcceptResult::ContinueNeeded(output) => {
@@ -166,7 +168,7 @@ fn continue_authentication(
 }
 
 fn proxy_request(
-    req: Request<Body>,
+    req: HttpRequest,
     app: &AppState,
     _user: &str,
     authenticate: &[u8],
@@ -204,7 +206,7 @@ fn proxy_request(
     )
 }
 
-fn builder_from_request(req: &Request<Body>) -> ::http::request::Builder {
+fn builder_from_request(req: &HttpRequest) -> ::http::request::Builder {
     let mut r = Request::builder();
     r.method(req.method().as_str()).uri(req.uri());
 
@@ -214,7 +216,7 @@ fn builder_from_request(req: &Request<Body>) -> ::http::request::Builder {
     r
 }
 
-fn error_response<E: ::std::error::Error>(err: &E) -> Response<Body> {
+fn error_response<E: ::std::error::Error>(err: &E) -> HttpResponse {
     error!("Error when requesting {}", err);
     Response::builder()
         .status(500)
