@@ -1,8 +1,6 @@
-#![feature(rust_2018_preview)]
+#![feature(rust_2018_preview, type_ascription, never_type)]
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate lazy_static;
 #[macro_use]
 extern crate structopt;
 
@@ -23,6 +21,13 @@ use hyper::{Body, Request, Response, Server, StatusCode};
 #[derive(Debug)]
 struct ClientSession {
     state: AuthState,
+    app_state: &'static AppState,
+}
+
+#[derive(Debug)]
+struct AppState {
+    http_client: HttpClient,
+    configuration: Configuration,
 }
 
 struct ClientService(Arc<Mutex<ClientSession>>);
@@ -40,17 +45,27 @@ enum Either<L, R> {
 
 type BoxFuture<I> = Box<Future<Item = I, Error = String> + Send>;
 type ResponseFuture = Future<Item = Response<Body>, Error = String> + Send;
+type HttpClient = Client<HttpConnector>;
 
-lazy_static! {
-    static ref http_client: Arc<Mutex<Client<HttpConnector>>> = Arc::new(Mutex::new(Client::new()));
-    static ref current_config: Configuration = Configuration::from_args();
-}
-
-fn new_session() -> ClientService {
+fn new_session(app_state: &'static AppState) -> ClientService {
     let worker = GSSWorker::new();
     ClientService(Arc::new(Mutex::new(ClientSession {
         state: AuthState::InProgress(worker),
+        app_state,
     })))
+}
+
+impl hyper::service::NewService for &'static AppState {
+    type Service = ClientService;
+    type ReqBody = <ClientService as Service>::ReqBody;
+    type ResBody = <ClientService as Service>::ResBody;
+    type Error = <ClientService as Service>::Error;
+    type Future = futures::future::FutureResult<ClientService, !>;
+    type InitError = !;
+
+    fn new_service(&self) -> Self::Future {
+        futures::done(Ok(new_session(*self)))
+    }
 }
 
 impl Service for ClientService {
@@ -80,17 +95,15 @@ fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> B
         {
             let session_mm = session_m.clone();
             let session = session_mm.lock().unwrap();
+            let app_state = session.app_state;
             match (&authenticate, &session.state) {
                 (Some(token), AuthState::InProgress(gss_worker)) => Box::new(
-                    continue_authentication(gss_worker, token).and_then(|r| match r {
-                        Either::Left((output, user)) => {
-                            let client = http_client.lock().unwrap();
-                            Box::new(
-                                proxy_request(req, &client, &user, &output)
+                    continue_authentication(gss_worker, token).and_then(move |r| match r {
+                        Either::Left((output, user)) => Box::new(
+                            proxy_request(req, app_state, &user, &output)
                                     .map(|response| (Some(AuthState::Ok(user)), response)),
                             )
-                                as Box<dyn Future<Item = _, Error = _> + Send>
-                        }
+                            as Box<dyn Future<Item = _, Error = _> + Send>,
                         Either::Right(response) => Box::new(futures::done(Ok((None, response))))
                             as Box<dyn Future<Item = _, Error = _> + Send>,
                     }),
@@ -99,13 +112,12 @@ fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> B
                     Box::new(futures::done(Ok((None, authorization_request(&[])))))
                         as Box<dyn Future<Item = _, Error = _> + Send>
                 }
-                (_, AuthState::Ok(user)) => {
-                    let client = http_client.lock().unwrap();
-                    Box::new(
-                        proxy_request(req, &client, &user, &[]).map(|response| (None, response)),
-                    ) as Box<dyn Future<Item = _, Error = _> + Send>
+                (_, AuthState::Ok(user)) => Box::new(
+                    proxy_request(req, &session.app_state, &user, &[])
+                        .map(|response| (None, response)),
+                )
+                    as Box<dyn Future<Item = _, Error = _> + Send>,
                 }
-            }
         }.and_then(move |(state, response)| {
             let mut sess = session_m.lock().unwrap();
             debug!("Setting state {:?}", state);
@@ -153,11 +165,11 @@ fn continue_authentication(
 
 fn proxy_request(
     req: Request<Body>,
-    client: &Client<HttpConnector>,
+    app: &AppState,
     _user: &str,
     authenticate: &[u8],
 ) -> Box<ResponseFuture> {
-    let backend_uri = format!("{}{}", current_config.backend, req.uri());
+    let backend_uri = format!("{}{}", app.configuration.backend, req.uri());
     info!("Requesting {}", backend_uri);
     let new_request = builder_from_request(&req)
         .version(http::Version::HTTP_11)
@@ -176,7 +188,7 @@ fn proxy_request(
     };
 
     Box::new(
-        client
+        app.http_client
             .request(new_request)
             .or_else(|e| futures::done(Ok(error_response(&e))))
             .map(|mut response| {
@@ -217,21 +229,27 @@ fn parse_authorization_header(raw: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
+    let configuration = Configuration::from_args();
+
     stderrlog::new()
         .module(module_path!())
-        .verbosity(current_config.verbosity)
+        .verbosity(configuration.verbosity)
         .timestamp(
-            current_config
+            configuration
                 .log_timestamp
                 .unwrap_or(stderrlog::Timestamp::Off),
         )
         .init()
         .unwrap();
 
-    let addr = current_config.bind.parse().unwrap();
+    let http_client = Client::new();
+    let addr = configuration.bind.parse().unwrap();
+    let app_state = Box::new(AppState {
+        http_client,
+        configuration,
+    });
 
-    let new_service = || Ok::<_, String>(new_session());
-    let server = Server::bind(&addr).serve(new_service);
+    let server = Server::bind(&addr).serve(Box::leak(app_state) as &'static AppState);
 
     info!("Listening on http://{}", addr);
     hyper::rt::run(server.map_err(|err| error!("server error: {}", err)));

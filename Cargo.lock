@@ -572,7 +572,6 @@ dependencies = [
  "gssapi-sys 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "http 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "hyper 0.12.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "lazy_static 1.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "stderrlog 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
