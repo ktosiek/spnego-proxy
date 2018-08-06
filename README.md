@@ -12,7 +12,10 @@ TODO:
 [ ] Web workers bound to threads? GSS-API is not Send/Sync
 [ ] Authorization
 [x] Actual proxying
-[ ] HTTPS support for server and client
+[ ] HTTPS support for server
+[x] HTTPS support for client
+[ ] Client certificates
+[ ] Timeouts for slow authentication and idle connections
 
 Hacking
 -------

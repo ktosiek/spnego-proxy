@@ -17,6 +17,8 @@ use structopt::StructOpt;
 use hyper::client::{Client, HttpConnector};
 use hyper::service::Service;
 use hyper::{Body, Request, Response, Server, StatusCode};
+use hyper_tls::HttpsConnector;
+use native_tls::TlsConnector;
 
 #[derive(Debug)]
 struct ClientSession {
@@ -45,7 +47,7 @@ enum Either<L, R> {
 
 type BoxFuture<I> = Box<Future<Item = I, Error = String> + Send>;
 type ResponseFuture = Future<Item = Response<Body>, Error = String> + Send;
-type HttpClient = Client<HttpConnector>;
+type HttpClient = Client<HttpsConnector<HttpConnector>>;
 
 fn new_session(app_state: &'static AppState) -> ClientService {
     let worker = GSSWorker::new();
@@ -101,8 +103,8 @@ fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> B
                     continue_authentication(gss_worker, token).and_then(move |r| match r {
                         Either::Left((output, user)) => Box::new(
                             proxy_request(req, app_state, &user, &output)
-                                    .map(|response| (Some(AuthState::Ok(user)), response)),
-                            )
+                                .map(|response| (Some(AuthState::Ok(user)), response)),
+                        )
                             as Box<dyn Future<Item = _, Error = _> + Send>,
                         Either::Right(response) => Box::new(futures::done(Ok((None, response))))
                             as Box<dyn Future<Item = _, Error = _> + Send>,
@@ -117,7 +119,7 @@ fn handle_request(session_m: Arc<Mutex<ClientSession>>, req: Request<Body>) -> B
                         .map(|response| (None, response)),
                 )
                     as Box<dyn Future<Item = _, Error = _> + Send>,
-                }
+            }
         }.and_then(move |(state, response)| {
             let mut sess = session_m.lock().unwrap();
             debug!("Setting state {:?}", state);
@@ -242,7 +244,8 @@ fn main() {
         .init()
         .unwrap();
 
-    let http_client = Client::new();
+    let tls_connector = build_tls_connector(&configuration).unwrap();
+    let http_client = build_http_client(tls_connector);
     let addr = configuration.bind.parse().unwrap();
     let app_state = Box::new(AppState {
         http_client,
@@ -253,4 +256,16 @@ fn main() {
 
     info!("Listening on http://{}", addr);
     hyper::rt::run(server.map_err(|err| error!("server error: {}", err)));
+}
+
+fn build_http_client(tls_connector: TlsConnector) -> HttpClient {
+    let mut http_connector = HttpConnector::new(4);
+    http_connector.enforce_http(false);
+    Client::builder().build(HttpsConnector::from((http_connector, tls_connector)))
+}
+
+fn build_tls_connector(c: &Configuration) -> Result<TlsConnector, native_tls::Error> {
+    let mut b = TlsConnector::builder();
+    b.danger_accept_invalid_certs(c.tls_insecure);
+    b.build()
 }

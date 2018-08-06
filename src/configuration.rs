@@ -15,6 +15,12 @@ pub struct Configuration {
     #[structopt(help = "Backend behind the proxy", long = "backend")]
     pub backend: String,
 
+    #[structopt(
+        help = "Accept an invalid certificate from the backend",
+        long = "insecure",
+    )]
+    pub tls_insecure: bool,
+
     // Logging {
     /// Verbose mode (-v, -vv, -vvv, etc)
     #[structopt(short = "v", long = "verbose", parse(from_occurrences))]
